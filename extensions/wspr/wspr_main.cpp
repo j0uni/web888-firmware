@@ -37,6 +37,7 @@
 #include "wspr.h"
 #include "services.h"
 #include "mqttpub.h"
+#include "wspr_hab.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -496,8 +497,60 @@ void WSPR_Deco(void *param)
             wspr_decode_t *dp = &w->deco[i];
             if (strcmp(dp->call, "...") == 0) continue;
             
-            mqtt_publish("WSPR", "\"call\":\"%s\",\"grid\":\"%s\",\"snr\":%.1f,\"dt\":%.1f,\"drift\":%d,\"freq\":%.6f,\"pwr\":%s",
-                dp->call, dp->grid, dp->snr, dp->dt_print, (int) dp->drift1, dp->freq_print, dp->pwr);
+            // Build a rich WSPR MQTT payload. We expose every raw field the
+            // decoder produced so downstream consumers can implement their
+            // own message-type-specific logic (e.g. HAB / U4B / Traquito
+            // basic-telemetry), without losing any information that was on
+            // the air. The outer mqtt_publish wraps this in
+            //     {"timestamp":..., "server":..., <body>}.
+            //
+            // Field reference:
+            //   call     — unpacked callsign as displayed (Type 3 looks up
+            //              the hash table; "..." if hash is unknown).
+            //   grid     — Maidenhead locator: 4 chars for Type 1, empty for
+            //              Type 2 (compound call), 6 chars for Type 3.
+            //   msg      — raw decoded WSPR text (e.g. "K1ABC FN42 30",
+            //              "<...> JO22hf 23"). This is the wsprd c_l_p string.
+            //   type     — WSPR message type (1, 2, or 3) returned by unpk_.
+            //   snr/dt/drift/freq/pwr/dBm — standard wsprd output.
+            //   dial_MHz — receiver's WSPR dial frequency for this band.
+            //   utc      — UTC HHMM of the slot (zero-padded), useful for
+            //              U4B channel resolution. hour/min are also exposed
+            //              as separate integers for convenience.
+            //
+            // When the spot's callsign + 4-grid + power match the U4B /
+            // Traquito basic-telemetry pattern, an additional "hab" object
+            // is appended carrying both the raw character indexes and (for
+            // basic-telemetry packets) decoded altitude / temp / voltage /
+            // speed / GPS-valid. Without the channel-to-flight mapping a
+            // single receiver cannot pin telemetry to a specific operator;
+            // raw bits are always provided so a downstream service can.
+            char wspr_body[1536];
+            int wn = snprintf(wspr_body, sizeof(wspr_body),
+                "\"call\":\"%s\",\"grid\":\"%s\",\"msg\":\"%s\",\"type\":%d,"
+                "\"snr\":%.1f,\"dt\":%.1f,\"drift\":%d,"
+                "\"freq\":%.6f,\"dial_MHz\":%.6f,"
+                "\"dBm\":%d,\"pwr\":\"%s\","
+                "\"utc\":\"%02d%02d\",\"hour\":%d,\"min\":%d",
+                dp->call, dp->grid, dp->c_l_p, dp->r_valid,
+                dp->snr, dp->dt_print, (int) dp->drift1,
+                dp->freq_print, w->dialfreq_MHz,
+                dp->dBm, dp->pwr,
+                dp->hour, dp->min, dp->hour, dp->min);
+
+            if (wn > 0 && (size_t)wn < sizeof(wspr_body) &&
+                wspr_hab_looks_like_u4b(dp->r_valid, dp->call, dp->grid, dp->dBm)) {
+                char hab_obj[512];
+                int hn = wspr_hab_format_json(dp->call, dp->grid, dp->dBm,
+                                              hab_obj, sizeof(hab_obj));
+                if (hn > 0) {
+                    int rem = (int)sizeof(wspr_body) - wn;
+                    int an = snprintf(wspr_body + wn, (size_t)rem, ",\"hab\":%s", hab_obj);
+                    if (an > 0 && an < rem) wn += an;
+                }
+            }
+
+            mqtt_publish("WSPR", "%s", wspr_body);
 
             if (w->autorun) {
                 asprintf(&cmd, WSPR_SPOT, wspr_c.rcall, wspr_c.rgrid, rqrg, year%100, month, day,

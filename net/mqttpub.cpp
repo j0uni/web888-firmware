@@ -158,8 +158,12 @@ void mqtt_publish(const char* topic, const char* payload, ...) {
 
     va_list args;
     va_start(args, payload);
-    char payload_buf[2048];
-    char body_buf[1024];
+    // body_buf holds the user's formatted body; payload_buf holds the body
+    // wrapped with timestamp/server fields. Bumped from 1024/2048 because
+    // some publishers (e.g. WSPR with optional U4B/HAB telemetry) emit
+    // significantly more than the original 1 KB.
+    char payload_buf[8192];
+    char body_buf[4096];
     char topic_buf[128];
     snprintf(topic_buf, sizeof(topic_buf), "web888/%s/%s", mqtt_client_id, topic);
     vsnprintf(body_buf, sizeof(body_buf), payload, args);

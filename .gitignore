@@ -4,3 +4,4 @@ build
 build-arm/
 build-docker/
 debug
+.DS_Store
