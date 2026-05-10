@@ -1,0 +1,7 @@
+# Keep image build context small; sources come from the bind mount at run time.
+build/
+build-arm/
+build-docker/
+**/*.o
+**/.ninja_*
+**/CMakeFiles/

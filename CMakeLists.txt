@@ -238,6 +238,7 @@ target_link_libraries(websdr.bin PRIVATE
     ${CONFIG_LIBRARIES}
     ${CURL_LIBRARIES}
     ${SSL_LIBRARIES}
+    crypt
 )
 
 if(ENABLE_HDFL)

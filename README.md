@@ -12,7 +12,81 @@ This code is forked from KiwiSDR project.
 1. Disable ToDA extention for now
 1. Use CMake as build system instead of Makefile, gcc as compiler instead of clang.
 
-## Setup a build enviorment by qemu
+## Docker build (recommended)
+
+The firmware binary targets **32-bit ARMv7** and links against **musl** (Alpine). On an **x86_64** or **arm64** host, Docker runs the same **Alpine 3.20 armv7** toolchain as the manual QEMU chroot instructions below.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/engine/install/) with BuildKit enabled (default on current Docker).
+- On **amd64**, register QEMU user-mode handlers **once** so `linux/arm/v7` containers run:
+
+```sh
+./docker/install-binfmt.sh
+```
+
+(Equivalent: `docker run --rm --privileged tonistiigi/binfmt --install all`.)
+
+### Build
+
+From the repository root (after `git submodule update --init --recursive`):
+
+```sh
+./scripts/docker-build.sh
+```
+
+This builds **Release** output at **`build-docker/websdr.bin`**.
+
+Options:
+
+- **Debug** (copies web assets without minify; faster iteration):
+
+  ```sh
+  ./scripts/docker-build.sh Debug
+  ```
+
+- **Clean CMake tree** before configure:
+
+  ```sh
+  CLEAN_BUILD=1 ./scripts/docker-build.sh
+  ```
+
+- **Different build directory** (default `build-docker`):
+
+  ```sh
+  BUILD_DIR=build-my ./scripts/docker-build.sh
+  ```
+
+- **Custom image name**:
+
+  ```sh
+  WEB888_BUILD_IMAGE=my-web888:dev ./scripts/docker-build.sh
+  ```
+
+### Docker Compose
+
+```sh
+docker compose build
+docker compose run --rm web888-build Release
+# or
+docker compose run --rm web888-build Debug
+```
+
+### Clean up root-owned build trees
+
+The container runs as **root**, so **`build-docker/`** may be owned by root. Remove it with:
+
+```sh
+docker run --rm -v "$(pwd):/w" alpine:3.20 rm -rf /w/build-docker
+```
+
+### Deploy
+
+Copy **`websdr.bin`** to the root of the SD card / TF filesystem, replacing the existing binary (see original project notes). If the device uses a **glibc** rootfs, a musl-linked binary from this image may not run; use a matching toolchain or the host’s documented build environment.
+
+---
+
+## Setup a build enviorment by qemu (manual)
 
 The instruction is only tested on Debian. It may work on Ubuntu as well but not testsed.
 

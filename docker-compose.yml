@@ -1,0 +1,24 @@
+# Build ARMv7 websdr.bin in a container (repo root mounted at /workspace).
+# Prerequisites on x86_64: run ./docker/install-binfmt.sh once.
+#
+#   docker compose build
+#   docker compose run --rm web888-build Release
+#   # or Debug (skips JS/CSS minify):
+#   docker compose run --rm web888-build Debug
+#
+# Output: ./build-docker/websdr.bin (override with BUILD_DIR in environment)
+
+services:
+  web888-build:
+    platform: linux/arm/v7
+    image: web888-builder:alpine-armv7
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      BUILD_DIR: ${BUILD_DIR:-build-docker}
+      CLEAN_BUILD: ${CLEAN_BUILD:-0}
+    command: ["Release"]
