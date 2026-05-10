@@ -77,7 +77,7 @@ docker compose run --rm web888-build Debug
 The container runs as **root**, so **`build-docker/`** may be owned by root. Remove it with:
 
 ```sh
-docker run --rm -v "$(pwd):/w" alpine:3.20 rm -rf /w/build-docker
+docker run --rm --platform linux/amd64 -v "$(pwd):/w" alpine:3.20 rm -rf /w/build-docker
 ```
 
 ### Deploy
