@@ -44,7 +44,7 @@ So a WSPR message is always:
 }
 ```
 
-`timestamp` is when the spot was published (after decode/upload), **not** the WSPR slot time. Use the `utc` / `hour` / `min` fields below for the slot.
+`timestamp` is when the spot was published (after decode/upload), **not** the WSPR slot time. Use numeric `slot_epoch` for ordering and deduplication; `utc` / `hour` / `min` remain available for display and compatibility.
 
 ## 3. Base WSPR fields
 
@@ -66,6 +66,7 @@ For every successfully decoded spot whose callsign is resolved, the publisher em
 | `utc`        | string  | UTC slot start as `"HHMM"`, zero-padded. Critical for U4B channel matching (see §4).                                                                 |
 | `hour`       | integer | UTC hour of the slot, `0…23`.                                                                                                                        |
 | `min`        | integer | UTC minute of the slot, `0…59`. WSPR slots are even minutes (`hh:00`, `hh:02`, …).                                                                   |
+| `slot_epoch` | integer | Exact UTC Unix timestamp of the WSPR slot start. At midnight, a preceding `23:58` packet is assigned to the previous UTC day.                         |
 
 ### Examples
 
@@ -78,7 +79,7 @@ Type 1 (regular ham):
   "snr":-22.0,"dt":0.4,"drift":0,
   "freq":14.097123,"dial_MHz":14.0956,
   "dBm":30,"pwr":"30",
-  "utc":"1138","hour":11,"min":38
+  "utc":"1138","hour":11,"min":38,"slot_epoch":1747049880
 }
 ```
 
@@ -142,7 +143,7 @@ A candidate is confirmed as paired only when the immediately preceding decoded s
 - is within 10 Hz of the telemetry carrier; and
 - has a normal callsign and a four-character locator.
 
-The closest frequency match is used. If two possible regular packets are within 0.5 Hz of the best match, the result is deliberately left unpaired. This conservative rule avoids manufacturing a plausible but incorrect position.
+The closest frequency match is used. If two possible regular packets are within 0.5 Hz of the best match, the result is explicitly `ambiguous` and deliberately left unpaired. A packet with no candidate is `unpaired`. This conservative rule avoids manufacturing a plausible but incorrect position.
 
 ### 4.3 Channel identity
 
@@ -163,11 +164,25 @@ The `telemetryId` bit decoded as `1`, and a unique regular packet was found. Dec
 
 ```jsonc
 "hab": {
+  "schema": 2,
   "kind": "u4b_basic",
+  "status": "confirmed",
   "paired": true,
+  "payload_call": "G4BKC",
   "source_call": "G4BKC",
   "grid4": "IO92",
+  "slot_epoch": 1787512560,
+  "source_slot_epoch": 1787512440,
   "pair_delta_hz": 2.0,
+  "pair": {
+    "method": "previous_slot_frequency",
+    "delta_seconds": 120,
+    "delta_hz": 2.0,
+    "candidates": 1,
+    "source_freq_MHz": 14.097184,
+    "telemetry_freq_MHz": 14.097186,
+    "source_snr": -19.0
+  },
   "ch":   { "id1": "Q", "id3": "9" },
   "raw":  { "c1":"Q","c2":"J","c3":"9","c4":"F","c5":"G","c6":"P",
             "g1":"M","g2":"B","g3":"4","g4":"3","p":2 },
@@ -186,11 +201,17 @@ The outer/base `grid` remains `"MB43"`, preserving the WSPR packet exactly as re
 
 | Field        | Type    | Range / unit                                                            | Notes |
 |--------------|---------|-------------------------------------------------------------------------|-------|
+| `schema`     | integer | `2`                                                                      | HAB object schema. Consumers should reject unsupported future major schemas. |
 | `kind`       | string  | `"u4b_basic"`                                                            | Constant for this variant. |
+| `status`     | string  | `"confirmed"`                                                            | Only confirmed basic packets may create map positions. |
 | `paired`     | bool    | `true`                                                                    | The regular and telemetry packets were uniquely correlated. |
+| `payload_call` | string | WSPR callsign                                                            | Clear alias for `source_call`; not necessarily a SondeHub flight identifier. |
 | `source_call`| string  | WSPR callsign                                                             | Callsign from the regular packet two minutes earlier. |
 | `grid4`      | string  | 4-char Maidenhead locator                                                 | Real locator prefix from the regular packet. |
+| `slot_epoch` | integer | Unix seconds                                                              | Telemetry packet slot start. |
+| `source_slot_epoch` | integer | Unix seconds                                                       | Regular source-packet slot start, exactly 120 seconds earlier. |
 | `pair_delta_hz` | number | 0.0–10.0 Hz                                                            | Absolute carrier-frequency difference between the two packets. |
+| `pair`       | object  | pairing audit data                                                        | Pairing method, time/frequency deltas, candidate count, source/telemetry frequencies, and source SNR. |
 | `ch.id1`     | string  | one of `"0"`, `"1"`, `"Q"`                                               | First callsign char. |
 | `ch.id3`     | string  | `"0"`…`"9"`                                                              | Third callsign char. |
 | `raw.c1..c6` | string  | one ASCII char each                                                      | Original 6-char callsign. |
@@ -213,8 +234,13 @@ The packet decodes as standard basic telemetry, but no unique preceding regular 
 
 ```jsonc
 "hab": {
+  "schema": 2,
   "kind": "u4b_candidate_basic",
+  "status": "unpaired",
   "paired": false,
+  "reason": "no_regular_packet_in_previous_slot",
+  "slot_epoch": 1787512560,
+  "pair": { "method":"previous_slot_frequency", "candidates":0 },
   "ch": { "id1":"Q", "id3":"9" },
   "raw": { "c1":"Q","c2":"J","c3":"9","c4":"F","c5":"G","c6":"P",
            "g1":"M","g2":"B","g3":"4","g4":"3","p":2 },
@@ -224,7 +250,11 @@ The packet decodes as standard basic telemetry, but no unique preceding regular 
 }
 ```
 
-There is intentionally no `source_call`, `grid4`, or `grid6`.
+There is intentionally no `payload_call`, `source_call`, `grid4`, or `grid6`.
+
+When multiple preceding packets are too close in frequency to distinguish, the
+same candidate form uses `status:"ambiguous"`,
+`reason:"multiple_frequency_matches"`, and reports the number of candidates.
 
 #### 4.4.3 `kind: "u4b_unknown"`
 
@@ -251,7 +281,19 @@ Spot did not match the U4B shape, OR was Type 2/3, OR power/grid was outside U4B
 
 ### 5.1 Build a flight track from a single Web-888
 
-Use only `kind:"u4b_basic"` messages for a position track. These contain a receiver-local packet correlation and a defensible `grid6`. Treat `kind:"u4b_candidate_basic"` as unlocated telemetry.
+Create a position only when all of the following are true:
+
+```text
+hab.schema == 2
+hab.kind == "u4b_basic"
+hab.status == "confirmed"
+hab.paired == true
+hab.grid6 is a valid six-character Maidenhead locator
+```
+
+Treat every `u4b_candidate_basic` packet as unlocated telemetry. Never group a
+track solely by `hab.ch`: it identifies a shared radio channel, not a unique
+balloon. Prefer `payload_call` plus externally resolved flight metadata.
 
 You still **cannot** infer that the transmitter is airborne or assign a flight name from this stream alone. A ground test uses the same packet format, and flight identity is operator-published metadata.
 
@@ -279,9 +321,9 @@ Just consume the base fields. The schema is back-compatible with the previous ve
 ## 6. Error handling and edge cases
 
 - **Hash failures.** Type 3 spots whose hashed callsign is unknown to the running decoder appear internally as `call:"..."` and are not published.
-- **Buffer truncation.** The WSPR body is built into a 1.5 KB stack buffer. If a future change makes the body longer than that, the publisher may emit a truncated JSON object. Validate JSON on the consumer side.
+- **Buffer limit.** The WSPR body is built into a 1.5 KB stack buffer. If a future HAB object cannot fit, the firmware publishes the valid base WSPR message without `hab` instead of emitting truncated JSON. Consumers should still validate incoming JSON.
 - **No retransmission.** QoS 0; if your broker is offline, messages are silently lost.
-- **Spot deduplication.** The wsprd decoder already de-duplicates spots within a 3 Hz window per slot. Consumers seeing duplicates across multiple Web-888 receivers should dedupe by `(server, hour, min, call, grid, freq rounded to 2 Hz)` or similar.
+- **Spot deduplication.** The wsprd decoder already de-duplicates spots within a 3 Hz window per slot. Consumers seeing duplicates should dedupe by `(server, slot_epoch, call, grid, freq rounded to 2 Hz)` or similar.
 - **Time skew.** The `utc` field uses the device's clock at sample time. GPS-disciplined clocks are accurate to ms; non-GPS or boot-time-only clocks may drift.
 
 ## 7. Implementation references
@@ -295,7 +337,10 @@ Just consume the base fields. The schema is back-compatible with the previous ve
 
 ## 8. Versioning
 
-This MQTT schema is **additive**. Future changes will:
+HAB schema 2 is **additive**: the original `kind`, `paired`, `source_call`,
+`grid4`, `grid6`, `pair_delta_hz`, decoded telemetry, channel, and raw fields
+retain their meanings. It adds `schema`, `status`, exact slot timestamps,
+`payload_call`, and pairing evidence. Future changes will:
 
 - Only add new fields, never rename or change types of fields documented in §3 and §4.
 - Introduce new `hab.kind` values (e.g. `u4b_extended_gps`) by widening the enum, never repurpose `u4b_basic` / `u4b_unknown`.

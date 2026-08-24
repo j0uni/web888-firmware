@@ -23,9 +23,13 @@ Example: if `update_url_base` is `https://jouni.kapsi.fi/web888`, then the stabl
 ## `version.txt`
 
 - **Method:** `GET`
-- **Body:** plain text, two integers separated by a dot, e.g. `1.0.5`
+- **Body:** plain text beginning with two integers separated by a dot. Fork
+  builds use `YYYY.MMDDHHMM`, e.g. `2026.8241052` for 24 August at 10:52 UTC.
 - **Whitespace:** leading/trailing spaces are fine; the device uses `sscanf(..., "%d.%d", ...)`.
-- **Semantics:** compared to the running firmware’s internal major/minor. If the remote pair is **greater**, an update is considered available (subject to admin “install updates” and scheduling).
+- **Semantics:** compared to the running firmware’s internal major/minor. If
+  the remote pair is **greater**, an update is considered available (subject
+  to admin “install updates” and scheduling). Including UTC hour/minute avoids
+  same-day builds being mistaken for an already installed image.
 
 ## `checksum` file
 

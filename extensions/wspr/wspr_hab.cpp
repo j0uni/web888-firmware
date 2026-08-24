@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 // WSPR power levels in dBm (19 entries), index = "powerVal" used by U4B encode.
 static const uint8_t kWsprPowerDbm[19] = {
@@ -102,6 +103,21 @@ bool wspr_hab_pair_matches(int regular_type, const char *regular_call,
     return true;
 }
 
+int64_t wspr_hab_slot_epoch(int64_t publish_epoch, int hour, int min)
+{
+    if (publish_epoch < 0 || hour < 0 || hour > 23 || min < 0 || min > 59) return -1;
+
+    time_t now = (time_t) publish_epoch;
+    struct tm utc;
+    if (!gmtime_r(&now, &utc)) return -1;
+
+    int64_t day_start = publish_epoch -
+        ((int64_t) utc.tm_hour * 3600 + utc.tm_min * 60 + utc.tm_sec);
+    int64_t slot = day_start + (int64_t) hour * 3600 + min * 60;
+    if (slot > publish_epoch) slot -= 24 * 60 * 60;
+    return slot;
+}
+
 // Returns true if decoded telemetry is "basic" (telemetryId == 1).
 // Fills out parameters even on extended/unknown telemetry types so the
 // raw sub-fields are always available to the consumer.
@@ -163,8 +179,7 @@ static bool decode_u4b_basic(const char *call, const char *grid, int dBm,
 }
 
 int wspr_hab_format_json(const char *call, const char *grid, int dBm,
-                         const char *source_call, const char *source_grid,
-                         double pair_delta_hz,
+                         const wspr_hab_pair_info_t *pair,
                          char *out, size_t out_size)
 {
     if (!out || out_size == 0) return -1;
@@ -185,7 +200,18 @@ int wspr_hab_format_json(const char *call, const char *grid, int dBm,
 
     // Always emit raw position breakdown so consumers can run their own
     // decoders (e.g. for extended telemetry / vendor-defined).
-    bool paired = source_call && *source_call && source_grid && strlen(source_grid) == 4;
+    wspr_hab_pair_status_t pair_status = pair ? pair->status : WSPR_HAB_PAIR_NONE;
+    const char *source_call = pair ? pair->source_call : NULL;
+    const char *source_grid = pair ? pair->source_grid : NULL;
+    bool paired = pair_status == WSPR_HAB_PAIR_MATCHED &&
+        source_call && *source_call && source_grid && strlen(source_grid) == 4;
+    const char *status = paired ? "confirmed" :
+        (pair_status == WSPR_HAB_PAIR_AMBIGUOUS ? "ambiguous" : "unpaired");
+    const char *reason = pair_status == WSPR_HAB_PAIR_AMBIGUOUS ?
+        "multiple_frequency_matches" : "no_regular_packet_in_previous_slot";
+    long long slot_epoch = pair ? (long long) pair->slot_epoch : -1;
+    long long source_slot_epoch = pair ? (long long) pair->source_slot_epoch : -1;
+    int candidate_count = pair ? pair->candidate_count : 0;
     int n;
     if (basic) {
         if (paired) {
@@ -197,15 +223,22 @@ int wspr_hab_format_json(const char *call, const char *grid, int dBm,
             grid6[4] = (char)tolower((unsigned char)grid6[4]);
             grid6[5] = (char)tolower((unsigned char)grid6[5]);
             n = snprintf(out, out_size,
-            "{\"kind\":\"u4b_basic\",\"paired\":true,"
-            "\"source_call\":\"%s\",\"grid4\":\"%s\",\"pair_delta_hz\":%.1f,"
+            "{\"schema\":2,\"kind\":\"u4b_basic\",\"status\":\"%s\",\"paired\":true,"
+            "\"payload_call\":\"%s\",\"source_call\":\"%s\",\"grid4\":\"%s\","
+            "\"slot_epoch\":%lld,\"source_slot_epoch\":%lld,\"pair_delta_hz\":%.1f,"
+            "\"pair\":{\"method\":\"previous_slot_frequency\",\"delta_seconds\":120,"
+            "\"delta_hz\":%.1f,\"candidates\":%d,\"source_freq_MHz\":%.6f,"
+            "\"telemetry_freq_MHz\":%.6f,\"source_snr\":%.1f},"
             "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
             "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
                     "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
             "\"grid56\":\"%s\",\"grid6\":\"%s\","
             "\"alt_m\":%d,\"temp_c\":%d,\"v\":%.2f,\"kn\":%d,"
             "\"gps_valid\":%s,\"tlm_type\":\"standard\"}",
-            source_call, source_grid, pair_delta_hz,
+            status, source_call, source_call, source_grid,
+            slot_epoch, source_slot_epoch, pair->pair_delta_hz,
+            pair->pair_delta_hz, candidate_count, pair->source_freq_MHz,
+            pair->telemetry_freq_MHz, pair->source_snr,
             call[0], call[2],
             call[0], call[1], call[2], call[3], call[4], call[5],
             grid[0], grid[1], grid[2], grid[3], powerVal,
@@ -214,14 +247,16 @@ int wspr_hab_format_json(const char *call, const char *grid, int dBm,
             gps_valid ? "true" : "false");
         } else {
             n = snprintf(out, out_size,
-            "{\"kind\":\"u4b_candidate_basic\",\"paired\":false,"
+            "{\"schema\":2,\"kind\":\"u4b_candidate_basic\",\"status\":\"%s\",\"paired\":false,"
+            "\"reason\":\"%s\",\"slot_epoch\":%lld,"
+            "\"pair\":{\"method\":\"previous_slot_frequency\",\"candidates\":%d},"
             "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
             "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
                     "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
             "\"grid56\":\"%s\","
             "\"alt_m\":%d,\"temp_c\":%d,\"v\":%.2f,\"kn\":%d,"
             "\"gps_valid\":%s,\"tlm_type\":\"standard\"}",
-            call[0], call[2],
+            status, reason, slot_epoch, candidate_count, call[0], call[2],
             call[0], call[1], call[2], call[3], call[4], call[5],
             grid[0], grid[1], grid[2], grid[3], powerVal,
             grid56, alt_m, temp_c, voltage, speed_kn,
@@ -234,23 +269,32 @@ int wspr_hab_format_json(const char *call, const char *grid, int dBm,
         // downstream consumer can apply the appropriate extended decoder.
         if (paired) {
             n = snprintf(out, out_size,
-                "{\"kind\":\"u4b_unknown\",\"paired\":true,"
-                "\"source_call\":\"%s\",\"grid4\":\"%s\",\"pair_delta_hz\":%.1f,"
+                "{\"schema\":2,\"kind\":\"u4b_unknown\",\"status\":\"%s\",\"paired\":true,"
+                "\"payload_call\":\"%s\",\"source_call\":\"%s\",\"grid4\":\"%s\","
+                "\"slot_epoch\":%lld,\"source_slot_epoch\":%lld,\"pair_delta_hz\":%.1f,"
+                "\"pair\":{\"method\":\"previous_slot_frequency\",\"delta_seconds\":120,"
+                "\"delta_hz\":%.1f,\"candidates\":%d,\"source_freq_MHz\":%.6f,"
+                "\"telemetry_freq_MHz\":%.6f,\"source_snr\":%.1f},"
                 "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
                 "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
                         "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
                 "\"tlm_type\":\"extended\"}",
-                source_call, source_grid, pair_delta_hz, call[0], call[2],
+                status, source_call, source_call, source_grid,
+                slot_epoch, source_slot_epoch, pair->pair_delta_hz,
+                pair->pair_delta_hz, candidate_count, pair->source_freq_MHz,
+                pair->telemetry_freq_MHz, pair->source_snr, call[0], call[2],
                 call[0], call[1], call[2], call[3], call[4], call[5],
                 grid[0], grid[1], grid[2], grid[3], powerVal);
         } else {
             n = snprintf(out, out_size,
-                "{\"kind\":\"u4b_unknown\",\"paired\":false,"
+                "{\"schema\":2,\"kind\":\"u4b_unknown\",\"status\":\"%s\",\"paired\":false,"
+                "\"reason\":\"%s\",\"slot_epoch\":%lld,"
+                "\"pair\":{\"method\":\"previous_slot_frequency\",\"candidates\":%d},"
                 "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
                 "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
                         "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
                 "\"tlm_type\":\"extended\"}",
-                call[0], call[2],
+                status, reason, slot_epoch, candidate_count, call[0], call[2],
                 call[0], call[1], call[2], call[3], call[4], call[5],
                 grid[0], grid[1], grid[2], grid[3], powerVal);
         }

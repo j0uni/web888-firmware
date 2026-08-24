@@ -254,11 +254,12 @@ endif(ENABLE_HDFL)
 
 cmake_host_system_information(RESULT _host_name QUERY HOSTNAME)
 string(TIMESTAMP CURRENT_YEAR "%Y")
-string(TIMESTAMP CURRENT_MONTH_DAY "%m%d")
+string(TIMESTAMP CURRENT_BUILD_ID "%m%d%H%M" UTC)
 
-# Check if the month starts with zero
-if (${CURRENT_MONTH_DAY} MATCHES "^0[0-9].*")
-    string(SUBSTRING ${CURRENT_MONTH_DAY} 1 3 CURRENT_MONTH_DAY)
+# Keep VERSION_MIN numeric while making multiple builds on the same UTC day
+# monotonic for OTA comparisons (MMDDHHMM, e.g. 08241052 -> 8241052).
+if (${CURRENT_BUILD_ID} MATCHES "^0[0-9].*")
+    string(SUBSTRING ${CURRENT_BUILD_ID} 1 7 CURRENT_BUILD_ID)
 endif()
 
 set(DIR_DATA /tmp/kiwi.data)
@@ -267,7 +268,7 @@ set(DIR_DATA /tmp/kiwi.data)
 file(WRITE ${PROJECT_BINARY_DIR}/version.h
     "#pragma once\n"
     "#define VERSION_MAJ ${CURRENT_YEAR}\n"
-    "#define VERSION_MIN ${CURRENT_MONTH_DAY}\n"
+    "#define VERSION_MIN ${CURRENT_BUILD_ID}\n"
 )
 
 target_compile_definitions(websdr.bin PUBLIC

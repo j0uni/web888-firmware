@@ -5,11 +5,13 @@ This code is forked from the KiwiSDR project and adapted for the Web-888.
 ## Features in this fork
 
 - Publishes complete WSPR decode records to MQTT, including message type,
-  slot time, dial frequency, power, and the original decoded message.
+  exact slot epoch, dial frequency, power, and the original decoded message.
 - Recognizes U4B / Traquito-shaped telemetry and correlates it conservatively
   with a unique regular WSPR packet from the preceding two-minute slot. Only a
-  confirmed pair receives a six-character locator; unpaired telemetry remains
-  an explicitly unlocated candidate. See
+  confirmed pair receives a six-character locator; unpaired and ambiguous
+  telemetry remain explicitly unlocated candidates. Schema-v2 HAB messages
+  include pairing status, timestamps, candidate count, and frequency evidence
+  so downstream maps do not need to guess. See
   [docs/WSPR_MQTT_HAB.md](docs/WSPR_MQTT_HAB.md).
 - Supports a configurable OTA download base URL from the admin interface, with
   separate `stable` and `alpha` channels.

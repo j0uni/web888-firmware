@@ -47,6 +47,7 @@
 #include <strings.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <time.h>
 
 #define WSPR_DATA		0
 
@@ -453,11 +454,17 @@ static int _upload_task(int rx_chan, kstr_t *kstr)
 // is left unpaired instead of attaching somebody else's locator.
 static const wspr_decode_t *wspr_hab_find_regular(const wspr_t *w,
                                                   const wspr_decode_t *telemetry,
-                                                  double *pair_delta_hz)
+                                                  double *pair_delta_hz,
+                                                  wspr_hab_pair_status_t *status,
+                                                  int *candidate_count)
 {
     const wspr_decode_t *best = NULL;
     double best_delta_hz = 0.0;
     bool ambiguous = false;
+    int candidates = 0;
+
+    if (status) *status = WSPR_HAB_PAIR_NONE;
+    if (candidate_count) *candidate_count = 0;
 
     for (int i = 0; i < w->prev_uniques; i++) {
         const wspr_decode_t *regular = &w->prev_deco[i];
@@ -470,6 +477,8 @@ static const wspr_decode_t *wspr_hab_find_regular(const wspr_t *w,
             continue;
         }
 
+        candidates++;
+
         if (!best || delta_hz < best_delta_hz - 0.5) {
             best = regular;
             best_delta_hz = delta_hz;
@@ -479,8 +488,14 @@ static const wspr_decode_t *wspr_hab_find_regular(const wspr_t *w,
         }
     }
 
-    if (!best || ambiguous) return NULL;
+    if (candidate_count) *candidate_count = candidates;
+    if (!best) return NULL;
     if (pair_delta_hz) *pair_delta_hz = best_delta_hz;
+    if (ambiguous) {
+        if (status) *status = WSPR_HAB_PAIR_AMBIGUOUS;
+        return NULL;
+    }
+    if (status) *status = WSPR_HAB_PAIR_MATCHED;
     return best;
 }
 
@@ -527,6 +542,7 @@ void WSPR_Deco(void *param)
             "rcall=%s&rgrid=%s&rqrg=%.6f&date=%02d%02d%02d&time=%02d%02d&sig=%.0f&" \
             "dt=%.1f&drift=%d&tqrg=%.6f&tcall=%s&tgrid=%s&dbm=%s&version=web-888"
         int year, month, day; utc_year_month_day(&year, &month, &day);
+        int64_t publish_epoch = (int64_t) time(NULL);
         char *cmd;
 
         double rqrg = w->autorun? w->arun_deco_cf_MHz : w->centerfreq_MHz;
@@ -564,33 +580,49 @@ void WSPR_Deco(void *param)
             // single receiver cannot pin telemetry to a specific operator;
             // raw bits are always provided so a downstream service can.
             char wspr_body[1536];
+            int64_t slot_epoch = wspr_hab_slot_epoch(publish_epoch, dp->hour, dp->min);
             int wn = snprintf(wspr_body, sizeof(wspr_body),
                 "\"call\":\"%s\",\"grid\":\"%s\",\"msg\":\"%s\",\"type\":%d,"
                 "\"snr\":%.1f,\"dt\":%.1f,\"drift\":%d,"
                 "\"freq\":%.6f,\"dial_MHz\":%.6f,"
                 "\"dBm\":%d,\"pwr\":\"%s\","
-                "\"utc\":\"%02d%02d\",\"hour\":%d,\"min\":%d",
+                "\"utc\":\"%02d%02d\",\"hour\":%d,\"min\":%d,\"slot_epoch\":%lld",
                 dp->call, dp->grid, dp->c_l_p, dp->r_valid,
                 dp->snr, dp->dt_print, (int) dp->drift1,
                 dp->freq_print, w->dialfreq_MHz,
                 dp->dBm, dp->pwr,
-                dp->hour, dp->min, dp->hour, dp->min);
+                dp->hour, dp->min, dp->hour, dp->min, (long long) slot_epoch);
 
             if (wn > 0 && (size_t)wn < sizeof(wspr_body) &&
                 wspr_hab_looks_like_u4b(dp->r_valid, dp->call, dp->grid, dp->dBm)) {
-                char hab_obj[512];
-                double pair_delta_hz = 0.0;
+                char hab_obj[1024];
+                wspr_hab_pair_info_t pair = {};
+                pair.slot_epoch = slot_epoch;
+                pair.source_slot_epoch = slot_epoch - 120;
+                pair.telemetry_freq_MHz = dp->freq_print;
                 const wspr_decode_t *regular =
-                    wspr_hab_find_regular(w, dp, &pair_delta_hz);
+                    wspr_hab_find_regular(w, dp, &pair.pair_delta_hz,
+                                          &pair.status, &pair.candidate_count);
+                if (regular) {
+                    pair.source_call = regular->call;
+                    pair.source_grid = regular->grid;
+                    pair.source_freq_MHz = regular->freq_print;
+                    pair.source_snr = regular->snr;
+                }
                 int hn = wspr_hab_format_json(dp->call, dp->grid, dp->dBm,
-                                              regular ? regular->call : NULL,
-                                              regular ? regular->grid : NULL,
-                                              pair_delta_hz,
+                                              &pair,
                                               hab_obj, sizeof(hab_obj));
                 if (hn > 0) {
                     int rem = (int)sizeof(wspr_body) - wn;
-                    int an = snprintf(wspr_body + wn, (size_t)rem, ",\"hab\":%s", hab_obj);
-                    if (an > 0 && an < rem) wn += an;
+                    // Do not let snprintf leave a truncated HAB fragment in
+                    // an otherwise valid MQTT body. Seven bytes precede the
+                    // object: ,"hab":
+                    int needed = 7 + hn;
+                    if (needed < rem) {
+                        int an = snprintf(wspr_body + wn, (size_t)rem,
+                                          ",\"hab\":%s", hab_obj);
+                        if (an == needed) wn += an;
+                    }
                 }
             }
 
