@@ -40,6 +40,7 @@
 #include "wspr_hab.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <math.h>
@@ -446,6 +447,43 @@ static int _upload_task(int rx_chan, kstr_t *kstr)
     return 0;
 }
 
+// U4B sends the operator callsign and locator in a regular packet, then sends
+// telemetry two minutes later. Recover that first packet only when one spot
+// from this receiver's preceding slot is a clear frequency match. A near-tie
+// is left unpaired instead of attaching somebody else's locator.
+static const wspr_decode_t *wspr_hab_find_regular(const wspr_t *w,
+                                                  const wspr_decode_t *telemetry,
+                                                  double *pair_delta_hz)
+{
+    const wspr_decode_t *best = NULL;
+    double best_delta_hz = 0.0;
+    bool ambiguous = false;
+
+    for (int i = 0; i < w->prev_uniques; i++) {
+        const wspr_decode_t *regular = &w->prev_deco[i];
+        double delta_hz;
+        if (!wspr_hab_pair_matches(regular->r_valid, regular->call,
+                                   regular->grid, regular->hour, regular->min,
+                                   regular->freq_print, telemetry->hour,
+                                   telemetry->min, telemetry->freq_print,
+                                   &delta_hz)) {
+            continue;
+        }
+
+        if (!best || delta_hz < best_delta_hz - 0.5) {
+            best = regular;
+            best_delta_hz = delta_hz;
+            ambiguous = false;
+        } else if (delta_hz <= best_delta_hz + 0.5) {
+            ambiguous = true;
+        }
+    }
+
+    if (!best || ambiguous) return NULL;
+    if (pair_delta_hz) *pair_delta_hz = best_delta_hz;
+    return best;
+}
+
 void WSPR_Deco(void *param)
 {
     int rx_chan = (int) FROM_VOID_PARAM(param);
@@ -541,7 +579,13 @@ void WSPR_Deco(void *param)
             if (wn > 0 && (size_t)wn < sizeof(wspr_body) &&
                 wspr_hab_looks_like_u4b(dp->r_valid, dp->call, dp->grid, dp->dBm)) {
                 char hab_obj[512];
+                double pair_delta_hz = 0.0;
+                const wspr_decode_t *regular =
+                    wspr_hab_find_regular(w, dp, &pair_delta_hz);
                 int hn = wspr_hab_format_json(dp->call, dp->grid, dp->dBm,
+                                              regular ? regular->call : NULL,
+                                              regular ? regular->grid : NULL,
+                                              pair_delta_hz,
                                               hab_obj, sizeof(hab_obj));
                 if (hn > 0) {
                     int rem = (int)sizeof(wspr_body) - wn;
@@ -619,6 +663,12 @@ void WSPR_Deco(void *param)
                 dp->hour, dp->min, dp->snr, dp->dt_print, dp->freq_print, (int) dp->drift1, dp->c_l_p);
             TaskSleepMsec(1000);
         }
+
+        // Preserve this slot only after all telemetry has been correlated
+        // against the previous slot.
+        w->prev_uniques = w->uniques;
+        memcpy(w->prev_deco, w->deco,
+               (size_t)w->prev_uniques * sizeof(wspr_decode_t));
         wspr_ulprintf("%s UPLOAD %d spots RX%d %.4f DONE\n", w->iwbp? "IWBP" : "WSPR", w->uniques, w->rx_chan, rqrg);
         if (w->skip_upload > 0) w->skip_upload--;
         //printf("WSPR skip_upload=%d\n", w->skip_upload);

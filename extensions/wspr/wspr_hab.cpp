@@ -40,6 +40,12 @@ static int decode_base36(char c)
 // "channel" group together with the timeslot and frequency lane.
 static bool valid_id1(char c) { return c == '0' || c == '1' || c == 'Q'; }
 
+static int minute_of_day(int hour, int min)
+{
+    if (hour < 0 || hour > 23 || min < 0 || min > 59) return -1;
+    return hour * 60 + min;
+}
+
 bool wspr_hab_looks_like_u4b(int r_valid, const char *call, const char *grid, int dBm)
 {
     // Only Type 1 carries U4B basic telemetry.
@@ -68,6 +74,31 @@ bool wspr_hab_looks_like_u4b(int r_valid, const char *call, const char *grid, in
     // Power must be a valid WSPR power.
     if (decode_power_dbm_to_num(dBm) < 0) return false;
 
+    return true;
+}
+
+bool wspr_hab_pair_matches(int regular_type, const char *regular_call,
+                           const char *regular_grid, int regular_hour,
+                           int regular_min, double regular_freq_MHz,
+                           int telemetry_hour, int telemetry_min,
+                           double telemetry_freq_MHz, double *delta_hz)
+{
+    if (delta_hz) *delta_hz = 0.0;
+    if (regular_type != 1 || !regular_call || !regular_grid) return false;
+    if (regular_call[0] == '\0' || valid_id1(regular_call[0])) return false;
+    if (strlen(regular_grid) != 4) return false;
+
+    int regular_mod = minute_of_day(regular_hour, regular_min);
+    int telemetry_mod = minute_of_day(telemetry_hour, telemetry_min);
+    if (regular_mod < 0 || telemetry_mod < 0) return false;
+    if ((telemetry_mod - regular_mod + 24 * 60) % (24 * 60) != 2) return false;
+
+    double diff_hz = telemetry_freq_MHz - regular_freq_MHz;
+    if (diff_hz < 0.0) diff_hz = -diff_hz;
+    diff_hz *= 1e6;
+    if (diff_hz > 10.0) return false;
+
+    if (delta_hz) *delta_hz = diff_hz;
     return true;
 }
 
@@ -132,6 +163,8 @@ static bool decode_u4b_basic(const char *call, const char *grid, int dBm,
 }
 
 int wspr_hab_format_json(const char *call, const char *grid, int dBm,
+                         const char *source_call, const char *source_grid,
+                         double pair_delta_hz,
                          char *out, size_t out_size)
 {
     if (!out || out_size == 0) return -1;
@@ -152,43 +185,75 @@ int wspr_hab_format_json(const char *call, const char *grid, int dBm,
 
     // Always emit raw position breakdown so consumers can run their own
     // decoders (e.g. for extended telemetry / vendor-defined).
+    bool paired = source_call && *source_call && source_grid && strlen(source_grid) == 4;
     int n;
     if (basic) {
-        // Format full 6-char Maidenhead with conventional casing:
-        //   field (chars 0-1) uppercase, square (chars 2-3) digits,
-        //   subsquare (chars 4-5) lowercase. e.g. "JO22hf".
-        char grid6[7];
-        snprintf(grid6, sizeof(grid6), "%s%s", grid, grid56);
-        grid6[4] = (char)tolower((unsigned char)grid6[4]);
-        grid6[5] = (char)tolower((unsigned char)grid6[5]);
-        n = snprintf(out, out_size,
-            "{\"kind\":\"u4b_basic\","
+        if (paired) {
+            // The regular packet carries grid chars 1..4. The telemetry
+            // packet's apparent grid is sensor data; only chars 5..6 are
+            // recovered from its callsign payload.
+            char grid6[7];
+            snprintf(grid6, sizeof(grid6), "%s%s", source_grid, grid56);
+            grid6[4] = (char)tolower((unsigned char)grid6[4]);
+            grid6[5] = (char)tolower((unsigned char)grid6[5]);
+            n = snprintf(out, out_size,
+            "{\"kind\":\"u4b_basic\",\"paired\":true,"
+            "\"source_call\":\"%s\",\"grid4\":\"%s\",\"pair_delta_hz\":%.1f,"
             "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
             "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
                     "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
             "\"grid56\":\"%s\",\"grid6\":\"%s\","
             "\"alt_m\":%d,\"temp_c\":%d,\"v\":%.2f,\"kn\":%d,"
             "\"gps_valid\":%s,\"tlm_type\":\"standard\"}",
+            source_call, source_grid, pair_delta_hz,
             call[0], call[2],
             call[0], call[1], call[2], call[3], call[4], call[5],
             grid[0], grid[1], grid[2], grid[3], powerVal,
             grid56, grid6,
             alt_m, temp_c, voltage, speed_kn,
             gps_valid ? "true" : "false");
+        } else {
+            n = snprintf(out, out_size,
+            "{\"kind\":\"u4b_candidate_basic\",\"paired\":false,"
+            "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
+            "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
+                    "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
+            "\"grid56\":\"%s\","
+            "\"alt_m\":%d,\"temp_c\":%d,\"v\":%.2f,\"kn\":%d,"
+            "\"gps_valid\":%s,\"tlm_type\":\"standard\"}",
+            call[0], call[2],
+            call[0], call[1], call[2], call[3], call[4], call[5],
+            grid[0], grid[1], grid[2], grid[3], powerVal,
+            grid56, alt_m, temp_c, voltage, speed_kn,
+            gps_valid ? "true" : "false");
+        }
     } else {
         // tlm_type == 0: this packet is U4B-shaped but is *not* basic
         // telemetry (likely "extended telemetry" — header bit reserved for
         // user/vendor-defined formats). We expose only the raw bits so a
         // downstream consumer can apply the appropriate extended decoder.
-        n = snprintf(out, out_size,
-            "{\"kind\":\"u4b_unknown\","
-            "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
-            "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
-                    "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
-            "\"tlm_type\":\"extended\"}",
-            call[0], call[2],
-            call[0], call[1], call[2], call[3], call[4], call[5],
-            grid[0], grid[1], grid[2], grid[3], powerVal);
+        if (paired) {
+            n = snprintf(out, out_size,
+                "{\"kind\":\"u4b_unknown\",\"paired\":true,"
+                "\"source_call\":\"%s\",\"grid4\":\"%s\",\"pair_delta_hz\":%.1f,"
+                "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
+                "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
+                        "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
+                "\"tlm_type\":\"extended\"}",
+                source_call, source_grid, pair_delta_hz, call[0], call[2],
+                call[0], call[1], call[2], call[3], call[4], call[5],
+                grid[0], grid[1], grid[2], grid[3], powerVal);
+        } else {
+            n = snprintf(out, out_size,
+                "{\"kind\":\"u4b_unknown\",\"paired\":false,"
+                "\"ch\":{\"id1\":\"%c\",\"id3\":\"%c\"},"
+                "\"raw\":{\"c1\":\"%c\",\"c2\":\"%c\",\"c3\":\"%c\",\"c4\":\"%c\",\"c5\":\"%c\",\"c6\":\"%c\","
+                        "\"g1\":\"%c\",\"g2\":\"%c\",\"g3\":\"%c\",\"g4\":\"%c\",\"p\":%d},"
+                "\"tlm_type\":\"extended\"}",
+                call[0], call[2],
+                call[0], call[1], call[2], call[3], call[4], call[5],
+                grid[0], grid[1], grid[2], grid[3], powerVal);
+        }
     }
 
     if (n < 0 || (size_t)n >= out_size) return -1;

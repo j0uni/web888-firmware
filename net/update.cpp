@@ -32,12 +32,34 @@ Boston, MA  02110-1301, USA.
 #include "rx_util.h"
 #include "services.h"
 #include "peri.h"
+#include "update_validation.h"
 
 #include <types.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
 #include <string>
+
+static std::string update_url_base_normalized(void) {
+    bool err;
+    char* base = (char*)admcfg_string("update_url_base", &err, CFG_OPTIONAL);
+    std::string s;
+    if (!err && base != NULL && base[0] != '\0') {
+        s = base;
+    } else {
+        s = "https://downloads.rx-888.com/web-888";
+    }
+    if (base != NULL) {
+        admcfg_string_free(base);
+    }
+    while (!s.empty() && (s.back() == '/' || s.back() == ' ' || s.back() == '\t')) {
+        s.pop_back();
+    }
+    if (s.empty()) {
+        s = "https://downloads.rx-888.com/web-888";
+    }
+    return s;
+}
 
 static bool update_pending = false, update_task_running = false, update_in_progress = false;
 static int pending_maj = -1, pending_min = -1;
@@ -81,7 +103,9 @@ static void report_progress(conn_t* conn, const char* msg) {
 
 static int update_build(conn_t* conn, bool report, const char* channel, bool force_build) {
     bool no_fpga = false;
-    std::string url_base = "https://downloads.rx-888.com/web-888/" + std::string(channel) + "/";
+    bool hf_valid = false, vhf_valid = false;
+    off_t hf_size = -1, vhf_size = -1;
+    std::string url_base = update_url_base_normalized() + "/" + std::string(channel) + "/";
     sd_enable(true);
 
     // Fetch the binary
@@ -94,14 +118,20 @@ static int update_build(conn_t* conn, bool report, const char* channel, bool for
     if (report) report_progress(conn, "Download FPGA firmware");
 
     status = curl_get_file((url_base + "websdr_hf.bit").c_str(), "/media/mmcblk0p1/update/websdr_hf.bit", 15);
-    if (status != 0) {
-        no_fpga = true;
-    }
+    hf_valid = (status == 0 && update_fpga_file_valid("/media/mmcblk0p1/update/websdr_hf.bit", &hf_size));
+    if (!hf_valid)
+        lprintf("UPDATE: rejecting HF FPGA download (status=0x%08x size=%lld, minimum=%lld)\n",
+                status, (long long) hf_size, (long long) UPDATE_FPGA_MIN_BYTES);
 
     status = curl_get_file((url_base + "websdr_vhf.bit").c_str(), "/media/mmcblk0p1/update/websdr_vhf.bit", 15);
-    if (status != 0) {
-        no_fpga = true;
-    }
+    vhf_valid = (status == 0 && update_fpga_file_valid("/media/mmcblk0p1/update/websdr_vhf.bit", &vhf_size));
+    if (!vhf_valid)
+        lprintf("UPDATE: rejecting VHF FPGA download (status=0x%08x size=%lld, minimum=%lld)\n",
+                status, (long long) vhf_size, (long long) UPDATE_FPGA_MIN_BYTES);
+
+    no_fpga = !(hf_valid && vhf_valid);
+    if (no_fpga && report)
+        report_progress(conn, "FPGA download missing or too small; keeping installed FPGA firmware");
 
     if (report) report_progress(conn, "Download Web-888 Server");
 
@@ -164,7 +194,8 @@ static void _update_task(void* param) {
     bool ch = admcfg_bool("update_channel", &err, CFG_OPTIONAL);
     if (err) ch = false;
 
-    lprintf("UPDATE: checking for updates\n");
+    const std::string update_base = update_url_base_normalized();
+    lprintf("UPDATE: checking for updates (base %s)\n", update_base.c_str());
     if (force_check) update_pending = false; // don't let pending status override version reporting when a forced check
 
     if (report) report_progress(conn, "Checking internet connectivity");
@@ -188,7 +219,10 @@ static void _update_task(void* param) {
     // Run fetch in a Linux child process otherwise this thread will block and cause trouble
     // if the check is invoked from the admin page while there are active user connections.
     
-    ver = curl_get(ch ? "https://downloads.rx-888.com/web-888/alpha/version.txt" : "https://downloads.rx-888.com/web-888/stable/version.txt", 5, &status);
+    {
+        std::string ver_url = update_base + "/" + std::string(ch ? "alpha" : "stable") + "/version.txt";
+        ver = curl_get(ver_url.c_str(), 5, &status);
+    }
 
     if (ver == NULL || status != 0) {
         lprintf("UPDATE: failed to get latest version information from server\n");

@@ -917,9 +917,10 @@ function update_html()
 
       w3_divs('w3-container',
          w3_switch_label('w3-label-inline w3-label-left', 'Update Channel', 'Alpha', 'Stable', 'adm.update_channel', adm.update_channel, 'admin_radio_YN_cb'),
+         w3_input_get('', 'Update download base URL (no trailing slash)', 'adm.update_url_base', 'w3_url_set_cfg_cb', 'https://downloads.rx-888.com/web-888', 'https://example.com/web888'),
          w3_text('w3-bold w3-text-black',
 		   'Set to Alpha if you want to test the latest release, which may contains bugs. In worse case, you may lose your customization settings. <br>' +
-		   'Set to Stable if you want to play safe.'
+		   'Set to Stable if you want to play safe. The base URL must serve <code>stable/</code> and/or <code>alpha/</code> directories as described in the project docs.'
 				)
       )
 	);

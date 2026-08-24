@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.13)
 project(RaspSDR)
 
 include(ExternalProject)
+include(CTest)
 
 set(UPSTREAM_DIR ${CMAKE_SOURCE_DIR})
 
@@ -78,6 +79,12 @@ if(ENABLE_HDFL)
     ## HFDL external depedency
 
     add_subdirectory(${UPSTREAM_DIR}/externals/dumphfdl)
+    # The pinned dumphfdl fastddc.c defines is_integer() as plain `inline` and
+    # relies on GNU89 inline linkage. Modern GCC otherwise leaves an unresolved
+    # external reference when linking dumphfdl.
+    target_compile_options(dumphfdl_base PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-fgnu89-inline>
+    )
 endif(ENABLE_HDFL)
 ###########################################################
 
@@ -288,6 +295,26 @@ target_compile_definitions(websdr.bin PUBLIC
 )
 
 target_compile_options(websdr.bin PUBLIC ${PLATFORM_FLAGS})
+
+if(BUILD_TESTING)
+    add_executable(update_validation_test
+        ${UPSTREAM_DIR}/tests/update_validation_test.cpp
+        ${UPSTREAM_DIR}/net/update_validation.cpp
+    )
+    target_include_directories(update_validation_test PRIVATE
+        ${UPSTREAM_DIR}/net
+    )
+    add_test(NAME update_validation_test COMMAND update_validation_test)
+
+    add_executable(wspr_hab_test
+        ${UPSTREAM_DIR}/tests/wspr_hab_test.cpp
+        ${UPSTREAM_DIR}/extensions/wspr/wspr_hab.cpp
+    )
+    target_include_directories(wspr_hab_test PRIVATE
+        ${UPSTREAM_DIR}/extensions/wspr
+    )
+    add_test(NAME wspr_hab_test COMMAND wspr_hab_test)
+endif()
 
 # ----------------------- Build FILES embeded
 file(GLOB_RECURSE FILES_EMBED_JS RELATIVE ${UPSTREAM_DIR}/web

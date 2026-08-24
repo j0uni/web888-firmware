@@ -1,6 +1,23 @@
 # Web-888 Web Server Code
 
-This code is forked from KiwiSDR project.
+This code is forked from the KiwiSDR project and adapted for the Web-888.
+
+## Features in this fork
+
+- Publishes complete WSPR decode records to MQTT, including message type,
+  slot time, dial frequency, power, and the original decoded message.
+- Recognizes U4B / Traquito-shaped telemetry and correlates it conservatively
+  with a unique regular WSPR packet from the preceding two-minute slot. Only a
+  confirmed pair receives a six-character locator; unpaired telemetry remains
+  an explicitly unlocated candidate. See
+  [docs/WSPR_MQTT_HAB.md](docs/WSPR_MQTT_HAB.md).
+- Supports a configurable OTA download base URL from the admin interface, with
+  separate `stable` and `alpha` channels.
+- Hardens OTA installation: HTTP errors are rejected, checksums are verified,
+  and FPGA images below 500 KiB are never installed. If either FPGA image is
+  unavailable or invalid, both installed FPGA images are retained. See
+  [docs/WEB888_OTA_UPDATE_SERVER.md](docs/WEB888_OTA_UPDATE_SERVER.md).
+- Includes focused tests for HAB packet pairing and FPGA image validation.
 
 ## The notable changes:
 
@@ -36,6 +53,15 @@ From the repository root (after `git submodule update --init --recursive`):
 ```
 
 This builds **Release** output at **`build-docker/websdr.bin`**.
+
+The normal build also compiles the tests. Run them in the ARMv7 builder with:
+
+```sh
+docker run --rm --platform linux/arm/v7 --entrypoint /bin/sh \
+  -v "$PWD:/workspace" -w /workspace \
+  web888-builder:alpine-armv7 \
+  -c 'ctest --test-dir build-docker --output-on-failure'
+```
 
 Options:
 
@@ -82,7 +108,22 @@ docker run --rm --platform linux/amd64 -v "$(pwd):/w" alpine:3.20 rm -rf /w/buil
 
 ### Deploy
 
-Copy **`websdr.bin`** to the root of the SD card / TF filesystem, replacing the existing binary (see original project notes). If the device uses a **glibc** rootfs, a musl-linked binary from this image may not run; use a matching toolchain or the host’s documented build environment.
+Power the receiver off and back up the current SD-card executable before
+copying **`build-docker/websdr.bin`** to the card root as **`websdr.bin`**.
+Copy through a temporary filename, verify its SHA-256 hash, then rename it into
+place and safely eject the card. Keep the previous executable as
+**`websdr.bin.old`** so an offline rollback does not depend on a working
+network or web interface.
+
+A server-only deployment does **not** require replacing `websdr_hf.bit` or
+`websdr_vhf.bit`. Leave known-good FPGA files untouched unless intentionally
+deploying a verified matching pair. If the device uses a **glibc** rootfs, a
+musl-linked binary from this image may not run; use a matching toolchain or the
+host’s documented build environment.
+
+To host **over-the-air** updates from your own HTTPS server (instead of
+`downloads.rx-888.com`), set **Admin → Update download base URL** and follow the
+OTA server guide linked above.
 
 ---
 
