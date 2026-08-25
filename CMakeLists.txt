@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.13)
 project(RaspSDR)
 
 include(ExternalProject)
+include(CTest)
 
 set(UPSTREAM_DIR ${CMAKE_SOURCE_DIR})
 
@@ -78,6 +79,12 @@ if(ENABLE_HDFL)
     ## HFDL external depedency
 
     add_subdirectory(${UPSTREAM_DIR}/externals/dumphfdl)
+    # The pinned dumphfdl fastddc.c defines is_integer() as plain `inline` and
+    # relies on GNU89 inline linkage. Modern GCC otherwise leaves an unresolved
+    # external reference when linking dumphfdl.
+    target_compile_options(dumphfdl_base PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-fgnu89-inline>
+    )
 endif(ENABLE_HDFL)
 ###########################################################
 
@@ -238,6 +245,7 @@ target_link_libraries(websdr.bin PRIVATE
     ${CONFIG_LIBRARIES}
     ${CURL_LIBRARIES}
     ${SSL_LIBRARIES}
+    crypt
 )
 
 if(ENABLE_HDFL)
@@ -246,11 +254,12 @@ endif(ENABLE_HDFL)
 
 cmake_host_system_information(RESULT _host_name QUERY HOSTNAME)
 string(TIMESTAMP CURRENT_YEAR "%Y")
-string(TIMESTAMP CURRENT_MONTH_DAY "%m%d")
+string(TIMESTAMP CURRENT_BUILD_ID "%m%d%H%M" UTC)
 
-# Check if the month starts with zero
-if (${CURRENT_MONTH_DAY} MATCHES "^0[0-9].*")
-    string(SUBSTRING ${CURRENT_MONTH_DAY} 1 3 CURRENT_MONTH_DAY)
+# Keep VERSION_MIN numeric while making multiple builds on the same UTC day
+# monotonic for OTA comparisons (MMDDHHMM, e.g. 08241052 -> 8241052).
+if (${CURRENT_BUILD_ID} MATCHES "^0[0-9].*")
+    string(SUBSTRING ${CURRENT_BUILD_ID} 1 7 CURRENT_BUILD_ID)
 endif()
 
 set(DIR_DATA /tmp/kiwi.data)
@@ -259,7 +268,7 @@ set(DIR_DATA /tmp/kiwi.data)
 file(WRITE ${PROJECT_BINARY_DIR}/version.h
     "#pragma once\n"
     "#define VERSION_MAJ ${CURRENT_YEAR}\n"
-    "#define VERSION_MIN ${CURRENT_MONTH_DAY}\n"
+    "#define VERSION_MIN ${CURRENT_BUILD_ID}\n"
 )
 
 target_compile_definitions(websdr.bin PUBLIC
@@ -287,6 +296,26 @@ target_compile_definitions(websdr.bin PUBLIC
 )
 
 target_compile_options(websdr.bin PUBLIC ${PLATFORM_FLAGS})
+
+if(BUILD_TESTING)
+    add_executable(update_validation_test
+        ${UPSTREAM_DIR}/tests/update_validation_test.cpp
+        ${UPSTREAM_DIR}/net/update_validation.cpp
+    )
+    target_include_directories(update_validation_test PRIVATE
+        ${UPSTREAM_DIR}/net
+    )
+    add_test(NAME update_validation_test COMMAND update_validation_test)
+
+    add_executable(wspr_hab_test
+        ${UPSTREAM_DIR}/tests/wspr_hab_test.cpp
+        ${UPSTREAM_DIR}/extensions/wspr/wspr_hab.cpp
+    )
+    target_include_directories(wspr_hab_test PRIVATE
+        ${UPSTREAM_DIR}/extensions/wspr
+    )
+    add_test(NAME wspr_hab_test COMMAND wspr_hab_test)
+endif()
 
 # ----------------------- Build FILES embeded
 file(GLOB_RECURSE FILES_EMBED_JS RELATIVE ${UPSTREAM_DIR}/web

@@ -8,6 +8,7 @@
 "enable_gps":true,
 "update_check":true,
 "update_install":true,
+"update_url_base":"https://downloads.rx-888.com/web-888",
 "sdr_hu_register":false,
 "api_key":"",
 "ip_address": {

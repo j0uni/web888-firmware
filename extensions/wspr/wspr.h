@@ -295,6 +295,10 @@ typedef struct {
 	int dBm;
 	#define NDECO 32
 	wspr_decode_t deco[NDECO];
+	// Previous two-minute slot, retained to pair U4B telemetry with the
+	// preceding regular WSPR packet that carries the locator's first 4 chars.
+	int prev_uniques;
+	wspr_decode_t prev_deco[NDECO];
 
 	// decode task shmem
 	int uniques;

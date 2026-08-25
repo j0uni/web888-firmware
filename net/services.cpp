@@ -895,6 +895,10 @@ kstr_t* curl_get(const char* url, long timeout_s, int *status)
     // Enforce IPv4 usage
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
 
+    // Treat HTTP error responses (for example a 404 HTML page) as failed
+    // downloads instead of accepting their response body as firmware.
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
     // Set timeout to 5 seconds
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_s);
 
@@ -946,6 +950,10 @@ int curl_get_file(const char* url, const char* output_filename, long timeout_s)
 
     // Enforce IPv4 usage
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+
+    // Do not write HTTP error response bodies (such as a 404 page) as if they
+    // were successfully downloaded files.
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 
     // Set timeout to 5 seconds
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_s);

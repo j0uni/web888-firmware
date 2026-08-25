@@ -462,6 +462,8 @@ void update_vars_from_config(bool called_at_init) {
     admcfg_default_string("duc_host", "", &update_admcfg);
     admcfg_default_int("duc_update", 3, &update_admcfg);
     admcfg_default_int("restart_update", 0, &update_admcfg);
+    // Base URL for OTA firmware (no trailing slash). Appended with "/{stable|alpha}/" and filenames.
+    admcfg_default_string("update_url_base", "https://downloads.rx-888.com/web-888", &update_admcfg);
     admcfg_default_string("ip_address.dns1", "1.1.1.1", &update_admcfg);
     admcfg_default_string("ip_address.dns2", "8.8.8.8", &update_admcfg);
     admcfg_default_string("url_redirect", "", &update_admcfg);
